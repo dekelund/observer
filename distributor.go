@@ -1,10 +1,11 @@
 package observer
 
 type dist struct {
-	name       string
-	observers  map[string][]Observer
-	events     chan Event
-	toRegister chan Observe
+	name         string
+	observers    map[string][]Observer
+	events       chan Event
+	toRegister   chan Observe
+	toUnregister chan Observe
 }
 
 // Distributor provides means to register and notify events
@@ -17,7 +18,7 @@ type Distributor struct {
 func NewDistributor(name string) Distributor {
 	observers := map[string][]Observer{}
 
-	return Distributor{&dist{name, observers, nil, nil}}
+	return Distributor{&dist{name, observers, nil, nil, nil}}
 }
 
 // ObserveAndNotify sets up a go-routine mapping incoming
@@ -30,10 +31,12 @@ func (distributor Distributor) ObserveAndNotify() chan bool {
 
 	distributor.events = make(chan Event, 1024)
 	distributor.toRegister = make(chan Observe, 8)
+	distributor.toUnregister = make(chan Observe, 8)
 
 	go func() {
 		defer close(distributor.events)
 		defer close(distributor.toRegister)
+		defer close(distributor.toUnregister)
 
 		var event Event
 		var observer Observe
@@ -45,6 +48,8 @@ func (distributor Distributor) ObserveAndNotify() chan bool {
 				distributor.notifyObservers(event)
 			case observer, ok = <-distributor.toRegister:
 				distributor.registerObserver(observer)
+			case observer, ok = <-distributor.toUnregister:
+				distributor.unregisterObserver(observer)
 			case _, ok = <-stopObserving:
 				ok = false
 			}
@@ -59,6 +64,13 @@ func (distributor Distributor) ObserveAndNotify() chan bool {
 // second parameter.
 func (distributor Distributor) RegisterObserver(observer Observer, keys ...string) {
 	distributor.toRegister <- Observe{observer, keys}
+}
+
+// UnregisterObserver removes an observern from the
+// list receiving notifications for keys in second
+// parameter.
+func (distributor Distributor) UnregisterObserver(observer Observer, keys ...string) {
+	distributor.toUnregister <- Observe{observer, keys}
 }
 
 // RegisterObservers registers multiple observers to receive
@@ -80,6 +92,32 @@ func (distributor Distributor) NotifyObservers(events ...Event) {
 func (distributor Distributor) registerObserver(observer Observe) {
 	for _, key := range observer.keys {
 		distributor.observers[key] = append(distributor.observers[key], observer)
+	}
+}
+
+func (distributor Distributor) unregisterObserver(observer Observe) {
+	for _, key := range observer.keys {
+		i := -1
+		observers, ok := distributor.observers[key]
+		if !ok {
+			continue
+		}
+
+		for j, o := range observers {
+			if o.UID() == observer.Observer.UID() {
+				i = j
+				break
+			}
+		}
+
+		if i >= 0 {
+			distributor.observers[key][i] = distributor.observers[key][len(distributor.observers[key])-1]
+			distributor.observers[key] = distributor.observers[key][:len(distributor.observers[key])-1]
+		}
+
+		if len(distributor.observers[key]) == 0 {
+			delete(distributor.observers, key)
+		}
 	}
 }
 
